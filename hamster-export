@@ -1,0 +1,421 @@
+#!/usr/bin/env python
+# - coding: utf-8 -
+"""
+:copyright: (c) 2013 by Giedrius Slavinskas.
+:license: MIT, see LICENSE for more details.
+"""
+
+import re
+import os
+import urllib
+import urllib2
+from datetime import datetime, date
+import calendar
+import subprocess
+import tempfile
+import xml.dom.minidom
+import argparse
+import ConfigParser
+import itertools
+import operator
+from hamster.client import Storage
+
+DATETIME_FORMAT = '%Y-%m-%d %H:%M'
+
+TIME_ENTRY_FORMAT = ('{datetime} | {name:{name_width}} | '
+                     '{ticket:{ticket_width}} | {duration}\n'
+                     '{description}\n\n')
+
+FILE_PATTERN = re.compile(r'(?P<datetime>\d{4}-\d{2}-\d{2} \d{2}:\d{2}) \| '
+                          r'(?P<name>.+) \| '
+                          r'(?P<ticket>.+) \| '
+                          r'(?P<duration>\d+:\d+)\n'
+                          r'(?P<description>.+)(\n\n)?')
+
+
+def round_up(integer, precision):
+    mod = integer % precision
+    if mod:
+        return integer + (precision - mod)
+    return integer
+
+
+class Timesheet(object):
+
+    def __init__(self, entries=[]):
+        self._entries = entries
+
+    def add_entry(self, entry):
+        self.append(entry)
+
+    @property
+    def entries(self):
+        return self._entries
+
+    @staticmethod
+    def from_hamster_facts(storage, date_from, date_to):
+        facts = storage.get_facts(date_from, date_to)
+        entries = map(TimeEntry.from_hamster_fact, facts)
+        return Timesheet(entries)
+
+    @staticmethod
+    def from_textfile(textfile):
+        entries = []
+        for m in re.finditer(FILE_PATTERN, textfile.strip()):
+            entries.append(TimeEntry.from_values(m.groupdict()))
+        return Timesheet(entries)
+
+    def export(self):
+        def get_attribute_lengh(attr):
+            length = 0
+            for entry in self.entries:
+                attr_len = len(getattr(entry, attr, ''))
+                if attr_len > length:
+                    length = attr_len
+            return length
+
+        widths = {
+            'name_width': get_attribute_lengh('name'),
+            'ticket_width': get_attribute_lengh('ticket'),
+        }
+
+        text = ''
+        for entry in self.entries:
+            values = entry.values()
+            values.update(widths)
+            text += TIME_ENTRY_FORMAT.format(**values)
+        return text
+
+    def round_up(self, period):
+        if period > 1:
+            for entry in self.entries:
+                entry.duration = round_up(entry.duration_mins, period) * 60
+
+    def shorten(self):
+        def merge(items):
+            item = items[0]
+            if len(items) > 1:
+                item.duration = sum(map(operator.attrgetter('duration'),
+                                        items))
+            return item
+
+        key = operator.attrgetter('date', 'name', 'description')
+        merged = []
+        for key, items in itertools.groupby(sorted(self.entries, key=key),
+                                            key=key):
+            merged.append(merge(list(items)))
+        self._entries = merged
+
+
+class TimeEntry(object):
+
+    def __init__(self, name, dt, duration, description, ticket):
+        self.datetime = dt
+        self.name = name
+        self.duration = duration
+        self.description = description
+        self.ticket = ticket
+
+    @property
+    def activity(self):
+        return self.name.split('@')[0]
+
+    @property
+    def category(self):
+        items = self.name.split('@')
+        return items[1] if len(items) == 2 else ''
+
+    @property
+    def date(self):
+        return self.datetime.date()
+
+    @property
+    def duration_mins(self):
+        return round_up(self.duration, 60) / 60
+
+    @staticmethod
+    def parse_ticket(string, default=' '):
+        for word in string.split():
+            if word.startswith('#') and word[1:].isdigit():
+                return word[1:]
+        return default
+
+    @staticmethod
+    def from_hamster_fact(fact):
+        duration = fact.delta.seconds + fact.delta.days * 24 * 60 * 60
+        ticket = TimeEntry.parse_ticket(fact.description)
+        name = TimeEntry.make_name(fact.activity, fact.category)
+        return TimeEntry(name, fact.start_time, duration, fact.description,
+                         ticket)
+
+    def repr_duration(self):
+        hours = self.duration_mins / 60
+        minutes = self.duration_mins % 60
+        return '{}:{:0>2}'.format(hours, minutes)
+
+    @staticmethod
+    def parse_duration(string):
+        hours, minutes = string.split(':')
+        duration = (int(hours) * 60 + int(minutes)) * 60
+        return duration
+
+    def values(self):
+        values = {
+            'name': self.name,
+            'datetime': self.datetime.strftime(DATETIME_FORMAT),
+            'duration': self.repr_duration(),
+            'description': self.description,
+            'ticket': self.ticket,
+        }
+        return values
+
+    @staticmethod
+    def from_values(values):
+        dt = datetime.strptime(values['datetime'], DATETIME_FORMAT)
+        duration = TimeEntry.parse_duration(values['duration'])
+        return TimeEntry(values['name'].strip(), dt, duration,
+                         values['description'].strip(),
+                         values['ticket'].strip())
+
+    @staticmethod
+    def make_name(activity, category):
+        return '{}@{}'.format(activity or '', category or '').rstrip('@')
+
+
+class Activity(object):
+
+    def __init__(self, name, options={}):
+        self.name = name
+        self._options = options
+
+    def get(self, key):
+        return self._options.get(key)
+
+
+class Profile(object):
+
+    def __init__(self, name):
+        self.name = name
+        self._activities = {}
+
+    def add_activity(self, name, activity):
+        self._activities[name] = activity
+
+    def get_activity(self, name):
+        items = name.split('@')
+        activity_name = items[0]
+        categ = ('@' + items[1]) if len(items) == 2 else None
+        key = (name if name in self._activities else
+               categ if categ in self._activities else
+               activity_name if activity_name in self._activities else None)
+        if key:
+            return self._activities[key]
+        return None
+
+    def process(self, timesheet, **kwargs):
+        raise NotImplementedError
+
+    @staticmethod
+    def edit_timesheet(timesheet, editor='vim'):
+        new_timesheet = None
+        with tempfile.NamedTemporaryFile(suffix='.tmp') as tmp_file:
+            tmp_file.write(timesheet.export())
+            tmp_file.flush()
+            subprocess.call([editor, tmp_file.name])
+            tmp_file.seek(0)
+            updated_tmp_file = tmp_file.read()
+
+            new_timesheet = Timesheet.from_textfile(updated_tmp_file)
+        return new_timesheet
+
+
+class ActiveCollab(Profile):
+
+    def __init__(self, name, url, api_key, options={}):
+        super(ActiveCollab, self).__init__(name)
+        self.url = url
+        self.api_key = api_key
+        self._options = options
+        self.user_id = self.api_key.split('-')[0]
+
+        if not self.user_id.isdigit():
+            raise Exception('Invalid ActiveCollab api_key in '
+                            'profile %s' % self.name)
+
+    def process(self, timesheet, **kwargs):
+        timesheet = ActiveCollab.edit_timesheet(timesheet)
+        self.validate(timesheet)
+        total = len(timesheet.entries)
+        for i, entry in enumerate(timesheet.entries, start=1):
+            result = self.submit_entry(entry)
+            print '[{}/{}] {} {} ({})'.format(i, total, entry.name,
+                                              entry.repr_duration(),
+                                              entry.date)
+
+    def submit_entry(self, entry):
+        activity = self.get_activity(entry.name)
+        project = activity.get('project')
+        query = {
+            'submitted': 'submitted',
+            'time[body]': entry.description,
+            'time[user_id]': self.user_id,
+            'time[value]': entry.repr_duration(),
+            'time[record_date]': entry.datetime.strftime('%Y-%m-%d'),
+            'time[billable_status]': 1,
+        }
+        if entry.ticket.strip():
+            ticket_id = self.fetch_ticket_id(project, entry.ticket.strip())
+            query['time[parent_id]'] = ticket_id
+
+        path = '/projects/{}/time/add'.format(project)
+        result = self.send(path, query)
+
+    def fetch_ticket_id(self, project, ticket):
+        path = '/projects/{}/tickets/{}'.format(project, ticket)
+        data = self.send(path)
+        root = xml.dom.minidom.parseString(data)
+        ticket_id = root.getElementsByTagName('id')[0].firstChild.data
+        return ticket_id
+
+    def send(self, path, query=None):
+        url = '{domain}/api.php?path_info={path}&token={api_key}'.format(
+                            domain=self.url, path=path, api_key=self.api_key)
+        if not query:
+            url += '&format=xml'
+        data = urllib.urlencode(query) if query else None
+        result = urllib2.urlopen(url, data)
+        return result.read()
+
+    def validate(self, timesheet):
+        for entry in timesheet.entries:
+            activity = self.get_activity(entry.name)
+            if not activity:
+                raise Exception('Not configured activity: {}'.\
+                                                        format(entry.name))
+            if not activity.get('project'):
+                raise Exception('No project ID for activity {}'.\
+                                                        format(activity.name))
+
+
+def _filter_activity_names(profile, config):
+    for section in config.sections():
+        m = re.match('^activity "(.+)"$', section)
+        if m is not None:
+            if ((config.has_option(section, 'skip') and
+                 config.get(section, 'skip')) or
+                config.get(section, 'profile') == profile):
+                yield m.group(1)
+
+
+def load_profile(profile_name, config_files):
+    config = ConfigParser.SafeConfigParser()
+    config.read(config_files)
+
+    section = 'profile "{}"'.format(profile_name)
+    if not config.has_section(section):
+        raise Exception('No such profile: {}'.format(profile_name))
+    profile = None
+    if config.get(section, 'format') == 'activecollab':
+        profile = ActiveCollab(profile_name, config.get(section, 'url'),
+                               config.get(section, 'api_key'),
+                               dict(config.items(section)))
+    else:
+        raise Exception('Not supported format: {}'.format(config.get(section,
+                                                                   'format')))
+
+    for name in _filter_activity_names(profile_name, config):
+        section = 'activity "{}"'.format(name)
+        activity = Activity(name, dict(config.items(section)))
+        profile.add_activity(activity.name, activity)
+    return profile
+
+
+def parse_date(string):
+    months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug',
+              'sep', 'oct', 'nov', 'dec']
+    if string and len(string) >= 3:
+        string = string.lower()
+        month = months.index(string[:3]) + 1
+        day = string[3:]
+        day = int(day) if day else None
+        return (month, day)
+    return (None, None)
+
+
+def parse_date_range(from_, till):
+    today = date.today()
+    if from_ == 'today':
+        return (today, today)
+
+    month_from, day_from = parse_date(from_)
+    month_till, day_till = parse_date(till)
+
+    if not month_till:
+        year = today.year if month_from <= today.month else today.year - 1
+        if day_from:
+            year += (-1 if month_from == today.month
+                     and day_from > today.day else 0)
+            _date = date(year, month_from, day_from)
+            return (_date, _date)
+        else:
+            day_from = (calendar.monthrange(year, month_from)[1] if
+                        month_from != today.month else today.day)
+            return (date(year, month_from, 1),
+                    date(year, month_from, day_from))
+    else:
+        year = (today.year if month_till < today.month or
+                (month_till == today.month and day_till <= today.day) else
+               today.year - 1)
+        year_ = (year if month_from < month_till or
+                 (month_from == month_till and day_from < day_till) else
+                 year - 1)
+        return (date(year_, month_from, day_from),
+                date(year, month_till, day_till))
+
+
+def parse_round(string):
+    if string:
+        if string.isdigit():
+            return int(string)
+        elif string[:-1].isdigit():
+            if string[-1] == 'm':
+                return int(string[:-1])
+            elif string[-1] == 'h':
+                return int(string[:-1]) * 60
+    return 1
+
+
+if __name__ == "__main__":
+    """
+    Usage:
+
+    $ hamster-export profile feb11 dec23 --short --round=5m --skip
+
+
+    """
+    parser = argparse.ArgumentParser(description='Hamster exporter.')
+
+    parser.add_argument('profile', action='store', help='specify profile')
+    parser.add_argument('date', action='store',
+                        help='export time entries from this date')
+    parser.add_argument('till', action='store', nargs='?',
+                        help='export time entries till this date')
+    parser.add_argument('--short', action='store_true',
+                        help='merge similar time entries')
+    parser.add_argument('--round', action='store',
+                        help='round up the duration of time entries')
+
+    args = parser.parse_args()
+
+    profile = load_profile(args.profile,
+                           [os.path.expanduser('~/.hamster-export')])
+
+    from_, till = parse_date_range(args.date, args.till)
+    storage = Storage()
+    timesheet = Timesheet.from_hamster_facts(storage, from_, till)
+    timesheet.round_up(parse_round(args.round))
+    if args.short:
+        timesheet.shorten()
+
+    profile.process(timesheet)
+
