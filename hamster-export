@@ -135,9 +135,10 @@ class TimeEntry(object):
 
     @staticmethod
     def parse_ticket(string, default=' '):
-        for word in string.split():
-            if word.startswith('#') and word[1:].isdigit():
-                return word[1:]
+        if string:
+            match = re.match('(#|ticket)(\d+)', string)
+            if match:
+                return match.group(2)
         return default
 
     @staticmethod
