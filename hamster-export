@@ -5,6 +5,8 @@
 :license: MIT, see LICENSE for more details.
 """
 
+from __future__ import print_function
+import sys
 import re
 import os
 import urllib
@@ -240,8 +242,7 @@ class ActiveCollab(Profile):
         self.user_id = self.api_key.split('-')[0]
 
         if not self.user_id.isdigit():
-            raise Exception('Invalid ActiveCollab api_key in '
-                            'profile %s' % self.name)
+            exit('Invalid ActiveCollab api_key in profile', self.name)
 
     def process(self, timesheet, **kwargs):
         timesheet = ActiveCollab.edit_timesheet(timesheet)
@@ -249,9 +250,9 @@ class ActiveCollab(Profile):
         total = len(timesheet.entries)
         for i, entry in enumerate(timesheet.entries, start=1):
             result = self.submit_entry(entry)
-            print '[{}/{}] {} {} ({})'.format(i, total, entry.name,
+            print('[{}/{}] {} {} ({})'.format(i, total, entry.name,
                                               entry.repr_duration(),
-                                              entry.date)
+                                              entry.date))
 
     def submit_entry(self, entry):
         activity = self.get_activity(entry.name)
@@ -314,15 +315,14 @@ def load_profile(profile_name, config_files):
 
     section = 'profile "{}"'.format(profile_name)
     if not config.has_section(section):
-        raise Exception('No such profile: {}'.format(profile_name))
+        exit('No such profile:', profile_name)
     profile = None
     if config.get(section, 'format') == 'activecollab':
         profile = ActiveCollab(profile_name, config.get(section, 'url'),
                                config.get(section, 'api_key'),
                                dict(config.items(section)))
     else:
-        raise Exception('Not supported format: {}'.format(config.get(section,
-                                                                   'format')))
+        exit('Not supported format:', config.get(section, 'format'))
 
     for name in _filter_activity_names(profile_name, config):
         section = 'activity "{}"'.format(name)
@@ -384,6 +384,11 @@ def parse_round(string):
             elif string[-1] == 'h':
                 return int(string[:-1]) * 60
     return 1
+
+
+def exit(*args):
+    print(args, file=sys.stderr)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
