@@ -240,7 +240,7 @@ class Profile(object):
         for entry in timesheet.entries:
             if self.get_activity(entry.name):
                 new_timesheet.add_entry(entry)
-        return timesheet
+        return new_timesheet
 
     @staticmethod
     def edit_timesheet(timesheet, editor='vim'):
