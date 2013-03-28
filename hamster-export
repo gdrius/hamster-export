@@ -215,8 +215,8 @@ class Profile(object):
         self.name = name
         self._activities = {}
 
-    def add_activity(self, name, activity):
-        self._activities[name] = activity
+    def add_activity(self, activity):
+        self._activities[activity.name] = activity
 
     def get_activity(self, name):
         items = name.split('@')
@@ -231,6 +231,9 @@ class Profile(object):
 
     def process(self, timesheet, **kwargs):
         raise NotImplementedError
+
+    def validate(self):
+        pass
 
     @staticmethod
     def edit_timesheet(timesheet, editor='vim'):
@@ -303,28 +306,18 @@ class ActiveCollab(Profile):
         result = urllib2.urlopen(url, data)
         return result.read()
 
-    def validate(self, timesheet):
-        for entry in timesheet.entries:
-            activity = self.get_activity(entry.name)
-            if not activity:
-                raise Exception('Not configured activity: {}'.\
-                                                        format(entry.name))
+    def validate(self):
+        missing_project = set()
+        for activity in self._activities.values():
             if not activity.get('project'):
-                raise Exception('No project ID for activity {}'.\
-                                                        format(activity.name))
+                if activity.name not in missing_project:
+                    print('No project ID for activity', activity.name)
+                missing_project.add(activity.name)
+        if missing_project:
+            sys.exit(0)
 
 
-def _filter_activity_names(profile, config):
-    for section in config.sections():
-        m = re.match('^activity "(.+)"$', section)
-        if m is not None:
-            if ((config.has_option(section, 'skip') and
-                 config.get(section, 'skip')) or
-                config.get(section, 'profile') == profile):
-                yield m.group(1)
-
-
-def load_profile(profile_name, config_files):
+def load_profile(config_files, profile_name, activities):
     config = ConfigParser.SafeConfigParser()
     config.read(config_files)
 
@@ -339,10 +332,10 @@ def load_profile(profile_name, config_files):
     else:
         exit('Not supported format:', config.get(section, 'format'))
 
-    for name in _filter_activity_names(profile_name, config):
-        section = 'activity "{}"'.format(name)
-        activity = Activity(name, dict(config.items(section)))
-        profile.add_activity(activity.name, activity)
+    for activity in activities:
+        if activity.get('profile') == profile_name:
+            profile.add_activity(activity)
+    profile.validate()
     return profile
 
 
@@ -442,8 +435,7 @@ if __name__ == "__main__":
 
     config_files = [os.path.expanduser('~/.hamster-export')]
     activities = load_activities(config_files)
-    profile = load_profile(args.profile,
-                           [os.path.expanduser('~/.hamster-export')])
+    profile = load_profile(config_files, args.profile, activities)
 
     from_, till = parse_date_range(args.date, args.till)
     storage = Storage()
