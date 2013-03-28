@@ -108,6 +108,20 @@ class Timesheet(object):
             merged.append(merge(list(items)))
         self._entries = merged
 
+    def check_activities(self, activities):
+        patterns = set(map(operator.attrgetter('name'), activities))
+        missing = set()
+        for entry in self.entries:
+            items = entry.name.split('@')
+            activity = items.pop(0)
+            categ = '@{}'.format(items[0]) if items else None
+            if not (set([entry.name, activity, categ]) & patterns):
+                if entry.name not in missing:
+                    print('Not configured activity:', entry.name, file=sys.stderr)
+                missing.add(entry.name)
+        if missing:
+            sys.exit(0)
+
 
 class TimeEntry(object):
 
@@ -246,7 +260,8 @@ class ActiveCollab(Profile):
 
     def process(self, timesheet, **kwargs):
         timesheet = ActiveCollab.edit_timesheet(timesheet)
-        self.validate(timesheet)
+        timesheet.check_activities(self._activities.values())
+
         total = len(timesheet.entries)
         for i, entry in enumerate(timesheet.entries, start=1):
             result = self.submit_entry(entry)
@@ -331,6 +346,18 @@ def load_profile(profile_name, config_files):
     return profile
 
 
+def load_activities(config_files):
+    def parse_activities(config):
+        for section in config.sections():
+            m = re.match('^activity "(.+)"$', section)
+            if m is not None:
+                yield Activity(m.group(1), dict(config.items(section)))
+
+    config = ConfigParser.SafeConfigParser()
+    config.read(config_files)
+    return list(parse_activities(config))
+
+
 def parse_date(string):
     months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug',
               'sep', 'oct', 'nov', 'dec']
@@ -413,12 +440,16 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
+    config_files = [os.path.expanduser('~/.hamster-export')]
+    activities = load_activities(config_files)
     profile = load_profile(args.profile,
                            [os.path.expanduser('~/.hamster-export')])
 
     from_, till = parse_date_range(args.date, args.till)
     storage = Storage()
     timesheet = Timesheet.from_hamster_facts(storage, from_, till)
+    timesheet.check_activities(activities)
+
     timesheet.round_up(parse_round(args.round))
     if args.short:
         timesheet.shorten()
