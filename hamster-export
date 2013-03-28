@@ -48,7 +48,7 @@ class Timesheet(object):
         self._entries = entries
 
     def add_entry(self, entry):
-        self.append(entry)
+        self._entries.append(entry)
 
     @property
     def entries(self):
