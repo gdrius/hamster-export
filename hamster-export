@@ -466,11 +466,11 @@ if __name__ == "__main__":
                         help='export time entries from this date')
     parser.add_argument('till', action='store', nargs='?',
                         help='export time entries till this date')
-    parser.add_argument('--short', action='store_true',
+    parser.add_argument('-s', '--short', action='store_true',
                         help='merge similar time entries')
-    parser.add_argument('--round', action='store',
+    parser.add_argument('-r', '--round', action='store',
                         help='round up the duration of time entries')
-    parser.add_argument('--filename', action='store',
+    parser.add_argument('-f', '--filename', action='store',
                         help='export to file instead of stdout')
 
     args = parser.parse_args()
