@@ -20,6 +20,8 @@ import argparse
 import ConfigParser
 import itertools
 import operator
+import StringIO
+import csv
 from hamster.client import Storage
 
 DATETIME_FORMAT = '%Y-%m-%d %H:%M'
@@ -325,23 +327,53 @@ class ActiveCollab(Profile):
             sys.exit(0)
 
 
-def load_profile(config_files, profile_name, activities):
+class CSV(Profile):
+
+    def __init__(self, name, filename, options={}):
+        super(CSV, self).__init__(name)
+        self.filename = filename
+        self._options = options
+
+    def process(self, timesheet, **kwargs):
+        timesheet = self.filter_timesheet(timesheet)
+        timesheet = ActiveCollab.edit_timesheet(timesheet)
+        timesheet.check_activities(self._activities.values())
+
+        output = StringIO.StringIO()
+        writer = csv.writer(output, quoting=csv.QUOTE_NONNUMERIC)
+
+        writer.writerow(['activity', 'date', 'description', 'duration'])
+        for entry in timesheet.entries:
+            writer.writerow([entry.name, entry.date, entry.description,
+                             entry.repr_duration()])
+
+        if self.filename is not None:
+            file = open(os.path.join(os.getcwd(), self.filename), 'w')
+            file.write(output.getvalue())
+            file.close()
+        else:
+            sys.stdout.write(output.getvalue())
+
+def load_profile(config_files, args, activities):
     config = ConfigParser.SafeConfigParser()
     config.read(config_files)
 
-    section = 'profile "{}"'.format(profile_name)
+    section = 'profile "{}"'.format(args.profile)
     if not config.has_section(section):
-        exit('No such profile:', profile_name)
+        exit('No such profile:', args.profile)
     profile = None
-    if config.get(section, 'format') == 'activecollab':
-        profile = ActiveCollab(profile_name, config.get(section, 'url'),
+    format_ = config.get(section, 'format')
+    if format_ == 'activecollab':
+        profile = ActiveCollab(args.profile, config.get(section, 'url'),
                                config.get(section, 'api_key'),
                                dict(config.items(section)))
+    elif format_ == 'csv':
+        profile = CSV(args.profile, args.filename, dict(config.items(section)))
     else:
-        exit('Not supported format:', config.get(section, 'format'))
+        exit('Not supported format:', format_)
 
     for activity in activities:
-        if activity.get('profile') == profile_name:
+        if activity.get('profile') == args.profile:
             profile.add_activity(activity)
     profile.validate()
     return profile
@@ -438,12 +470,14 @@ if __name__ == "__main__":
                         help='merge similar time entries')
     parser.add_argument('--round', action='store',
                         help='round up the duration of time entries')
+    parser.add_argument('--filename', action='store',
+                        help='export to file instead of stdout')
 
     args = parser.parse_args()
 
     config_files = [os.path.expanduser('~/.hamster-export')]
     activities = load_activities(config_files)
-    profile = load_profile(config_files, args.profile, activities)
+    profile = load_profile(config_files, args, activities)
 
     from_, till = parse_date_range(args.date, args.till)
     storage = Storage()
