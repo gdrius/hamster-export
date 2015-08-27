@@ -112,7 +112,8 @@ class Timesheet(object):
         for key, items in itertools.groupby(sorted(self.entries, key=key),
                                             key=key):
             merged.append(merge(list(items)))
-        self._entries = merged
+
+        self._entries = sorted(merged, key=lambda i: i.duration, reverse=True)
 
     def check_activities(self, activities):
         patterns = set(map(operator.attrgetter('name'), activities))
