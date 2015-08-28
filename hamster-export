@@ -484,9 +484,10 @@ if __name__ == "__main__":
     timesheet = Timesheet.from_hamster_facts(storage, from_, till)
     timesheet.check_activities(activities)
 
-    timesheet.round_up(parse_round(args.round))
     if args.short:
         timesheet.shorten()
+
+    timesheet.round_up(parse_round(args.round))
 
     profile.process(timesheet)
 
