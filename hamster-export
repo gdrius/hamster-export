@@ -101,9 +101,11 @@ class Timesheet(object):
             if len(items) > 1:
                 item.duration = sum(map(operator.attrgetter('duration'),
                                         items))
+                item.description = ''.join(filter(lambda i: i or '', map(
+                    operator.attrgetter('description'), items)))
             return item
 
-        key = operator.attrgetter('date', 'name', 'description')
+        key = operator.attrgetter('date', 'name')
         merged = []
         for key, items in itertools.groupby(sorted(self.entries, key=key),
                                             key=key):
