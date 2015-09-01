@@ -101,7 +101,7 @@ class Timesheet(object):
             if len(items) > 1:
                 item.duration = sum(map(operator.attrgetter('duration'),
                                         items))
-                item.description = ''.join(filter(lambda i: i or '', map(
+                item.description = ', '.join(filter(lambda i: i or '', map(
                     operator.attrgetter('description'), items)))
             return item
 
