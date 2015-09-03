@@ -272,6 +272,11 @@ class ActiveCollab(Profile):
 
     def process(self, timesheet, **kwargs):
         timesheet = self.filter_timesheet(timesheet)
+        
+        if self._options.get('short'):
+            timesheet.shorten()
+        timesheet.round_up(parse_round(self._options.get('round')))
+
         timesheet = ActiveCollab.edit_timesheet(timesheet)
         timesheet.check_activities(self._activities.values())
 
@@ -336,6 +341,11 @@ class CSV(Profile):
 
     def process(self, timesheet, **kwargs):
         timesheet = self.filter_timesheet(timesheet)
+
+        if self._options.get('short'):
+            timesheet.shorten()
+        timesheet.round_up(parse_round(self._options.get('round')))
+
         timesheet = ActiveCollab.edit_timesheet(timesheet)
         timesheet.check_activities(self._activities.values())
 
@@ -363,12 +373,21 @@ def load_profile(config_files, args, activities):
         exit('No such profile:', args.profile)
     profile = None
     format_ = config.get(section, 'format')
+
+    options = dict(config.items(section))
+
+    if args.round:
+        options.update(round=args.round)
+
+    if args.short:
+        options.update(short=args.short)
+
     if format_ == 'activecollab':
         profile = ActiveCollab(args.profile, config.get(section, 'url'),
                                config.get(section, 'api_key'),
-                               dict(config.items(section)))
+                               options)
     elif format_ == 'csv':
-        profile = CSV(args.profile, args.filename, dict(config.items(section)))
+        profile = CSV(args.profile, args.filename, options)
     else:
         exit('Not supported format:', format_)
 
