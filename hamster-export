@@ -1,26 +1,23 @@
-#!/usr/bin/env python
-# - coding: utf-8 -
+#!/usr/bin/env python3
 """
 :copyright: (c) 2013 by Giedrius Slavinskas.
 :license: MIT, see LICENSE for more details.
 """
-
-from __future__ import print_function
 import sys
 import re
 import os
-import urllib
-import urllib2
+import urllib.parse
+import urllib.request
 from datetime import datetime, date
 import calendar
 import subprocess
 import tempfile
 import xml.dom.minidom
 import argparse
-import ConfigParser
+import configparser
 import itertools
 import operator
-import StringIO
+import io
 import csv
 from hamster.client import Storage
 
@@ -59,7 +56,7 @@ class Timesheet(object):
     @staticmethod
     def from_hamster_facts(storage, date_from, date_to):
         facts = storage.get_facts(date_from, date_to)
-        entries = map(TimeEntry.from_hamster_fact, facts)
+        entries = [TimeEntry.from_hamster_fact(f) for f in facts]
         return Timesheet(entries)
 
     @staticmethod
@@ -149,7 +146,7 @@ class TimeEntry(object):
 
     @property
     def duration_mins(self):
-        return round_up(self.duration, 60) / 60
+        return round_up(self.duration, 60) // 60
 
     @staticmethod
     def parse_ticket(string, default=' '):
@@ -168,7 +165,7 @@ class TimeEntry(object):
                          ticket)
 
     def repr_duration(self):
-        hours = self.duration_mins / 60
+        hours = self.duration_mins // 60
         minutes = self.duration_mins % 60
         return '{}:{:0>2}'.format(hours, minutes)
 
@@ -247,7 +244,7 @@ class Profile(object):
     @staticmethod
     def edit_timesheet(timesheet, editor='vim'):
         new_timesheet = None
-        with tempfile.NamedTemporaryFile(suffix='.tmp') as tmp_file:
+        with tempfile.NamedTemporaryFile(mode='w+', suffix='.tmp') as tmp_file:
             tmp_file.write(timesheet.export())
             tmp_file.flush()
             subprocess.call([editor, tmp_file.name])
@@ -312,8 +309,8 @@ class ActiveCollab(Profile):
                             domain=self.url, path=path, api_key=self.api_key)
         if not query:
             url += '&format=xml'
-        data = urllib.urlencode(query) if query else None
-        result = urllib2.urlopen(url, data)
+        data = urllib.parse.urlencode(query) if query else None
+        result = urllib.request.urlopen(url, data)
         return result.read()
 
     def validate(self):
@@ -339,7 +336,7 @@ class CSV(Profile):
         timesheet = ActiveCollab.edit_timesheet(timesheet)
         timesheet.check_activities(self._activities.values())
 
-        output = StringIO.StringIO()
+        output = io.StringIO()
         writer = csv.writer(output, quoting=csv.QUOTE_NONNUMERIC)
 
         writer.writerow(['activity', 'date', 'description', 'duration'])
@@ -355,7 +352,7 @@ class CSV(Profile):
             sys.stdout.write(output.getvalue())
 
 def load_profile(config_files, args, activities):
-    config = ConfigParser.SafeConfigParser()
+    config = configparser.ConfigParser()
     config.read(config_files)
 
     section = 'profile "{}"'.format(args.profile)
@@ -386,7 +383,7 @@ def load_activities(config_files):
             if m is not None:
                 yield Activity(m.group(1), dict(config.items(section)))
 
-    config = ConfigParser.SafeConfigParser()
+    config = configparser.ConfigParser()
     config.read(config_files)
     return list(parse_activities(config))
 
